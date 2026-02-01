@@ -31,22 +31,40 @@ def handle_push_event(webhook_data: dict, gitlab_token: str, gitlab_url: str, gi
         deletions = 0
         if push_review_enabled:
             # 获取PUSH的changes
-            changes = handler.get_push_changes()
-            logger.info('changes: %s', changes)
-            changes = filter_changes(changes)
+            changes_raw = handler.get_push_changes()
+            logger.info('changes: %s', changes_raw)
+            changes = filter_changes(changes_raw)
             if not changes:
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
-            review_result = "关注的文件没有修改"
-
-            if len(changes) > 0:
+                review_result = "关注的文件没有修改"
+            else:
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result = CodeReviewer().review_and_strip_code(str(changes), commits_text)
-                score = CodeReviewer.parse_review_score(review_text=review_result)
+                review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+                score = CodeReviewer.parse_review_level(review_text=review_result_raw)
+
                 for item in changes:
-                    additions += item['additions']
-                    deletions += item['deletions']
+                    additions += item.get('additions', 0)
+                    deletions += item.get('deletions', 0)
+
+                # 格式化输出
+                commit_message = commits[0].get('message', '').strip() if commits else ''
+                review_result = CodeReviewer.format_review_output(
+                    project_name=webhook_data['project']['name'],
+                    author=webhook_data['user_username'],
+                    branch=webhook_data.get('ref', '').replace('refs/heads/', ''),
+                    additions=additions,
+                    deletions=deletions,
+                    comment_lines=0,
+                    total_files=len(changes_raw) if changes_raw else 0,
+                    filtered_files=len(changes_raw) - len(changes) if changes_raw else 0,
+                    abnormal_files=0,
+                    normal_files=len(changes),
+                    commit_message=commit_message,
+                    review_result=review_result_raw,
+                )
+
             # 将review结果提交到Gitlab的 notes
-            handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+            handler.add_push_notes(review_result)
 
         event_manager['push_reviewed'].send(PushReviewEntity(
             project_name=webhook_data['project']['name'],
@@ -114,9 +132,9 @@ def handle_merge_request_event(webhook_data: dict, gitlab_token: str, gitlab_url
 
         # 仅仅在MR创建或更新时进行Code Review
         # 获取Merge Request的changes
-        changes = handler.get_merge_request_changes()
-        logger.info('changes: %s', changes)
-        changes = filter_changes(changes)
+        changes_raw = handler.get_merge_request_changes()
+        logger.info('changes: %s', changes_raw)
+        changes = filter_changes(changes_raw)
         if not changes:
             logger.info('未检测到有关代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
             return
@@ -135,10 +153,27 @@ def handle_merge_request_event(webhook_data: dict, gitlab_token: str, gitlab_url
 
         # review 代码
         commits_text = ';'.join(commit['title'] for commit in commits)
-        review_result = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+        review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+
+        # 格式化输出
+        commit_message = commits[0].get('title', '') if commits else ''
+        formatted_output = CodeReviewer.format_review_output(
+            project_name=webhook_data['project']['name'],
+            author=webhook_data['user']['username'],
+            branch=webhook_data['object_attributes']['source_branch'],
+            additions=additions,
+            deletions=deletions,
+            comment_lines=0,
+            total_files=len(changes_raw),
+            filtered_files=len(changes_raw) - len(changes),
+            abnormal_files=0,
+            normal_files=len(changes),
+            commit_message=commit_message,
+            review_result=review_result_raw,
+        )
 
         # 将review结果提交到Gitlab的 notes
-        handler.add_merge_request_notes(f'Auto Review Result: \n{review_result}')
+        handler.add_merge_request_notes(formatted_output)
 
         # dispatch merge_request_reviewed event
         event_manager['merge_request_reviewed'].send(
@@ -181,22 +216,40 @@ def handle_github_push_event(webhook_data: dict, github_token: str, github_url: 
         deletions = 0
         if push_review_enabled:
             # 获取PUSH的changes
-            changes = handler.get_push_changes()
-            logger.info('changes: %s', changes)
-            changes = filter_github_changes(changes)
+            changes_raw = handler.get_push_changes()
+            logger.info('changes: %s', changes_raw)
+            changes = filter_github_changes(changes_raw)
             if not changes:
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
-            review_result = "关注的文件没有修改"
-
-            if len(changes) > 0:
+                review_result = "关注的文件没有修改"
+            else:
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result = CodeReviewer().review_and_strip_code(str(changes), commits_text)
-                score = CodeReviewer.parse_review_score(review_text=review_result)
+                review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+                score = CodeReviewer.parse_review_level(review_text=review_result_raw)
+
                 for item in changes:
                     additions += item.get('additions', 0)
                     deletions += item.get('deletions', 0)
+
+                # 格式化输出
+                commit_message = commits[0].get('message', '').strip() if commits else ''
+                review_result = CodeReviewer.format_review_output(
+                    project_name=webhook_data['repository']['name'],
+                    author=webhook_data['sender']['login'],
+                    branch=webhook_data['ref'].replace('refs/heads/', ''),
+                    additions=additions,
+                    deletions=deletions,
+                    comment_lines=0,
+                    total_files=len(changes_raw) if changes_raw else 0,
+                    filtered_files=len(changes_raw) - len(changes) if changes_raw else 0,
+                    abnormal_files=0,
+                    normal_files=len(changes),
+                    commit_message=commit_message,
+                    review_result=review_result_raw,
+                )
+
             # 将review结果提交到GitHub的 notes
-            handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+            handler.add_push_notes(review_result)
 
         event_manager['push_reviewed'].send(PushReviewEntity(
             project_name=webhook_data['repository']['name'],
@@ -254,9 +307,9 @@ def handle_github_pull_request_event(webhook_data: dict, github_token: str, gith
 
         # 仅仅在PR创建或更新时进行Code Review
         # 获取Pull Request的changes
-        changes = handler.get_pull_request_changes()
-        logger.info('changes: %s', changes)
-        changes = filter_github_changes(changes)
+        changes_raw = handler.get_pull_request_changes()
+        logger.info('changes: %s', changes_raw)
+        changes = filter_github_changes(changes_raw)
         if not changes:
             logger.info('未检测到有关代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
             return
@@ -275,10 +328,27 @@ def handle_github_pull_request_event(webhook_data: dict, github_token: str, gith
 
         # review 代码
         commits_text = ';'.join(commit['title'] for commit in commits)
-        review_result = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+        review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+
+        # 格式化输出
+        commit_message = commits[0].get('title', '') if commits else ''
+        formatted_output = CodeReviewer.format_review_output(
+            project_name=webhook_data['repository']['name'],
+            author=webhook_data['pull_request']['user']['login'],
+            branch=webhook_data['pull_request']['head']['ref'],
+            additions=additions,
+            deletions=deletions,
+            comment_lines=0,
+            total_files=len(changes_raw) if changes_raw else 0,
+            filtered_files=len(changes_raw) - len(changes) if changes_raw else 0,
+            abnormal_files=0,
+            normal_files=len(changes),
+            commit_message=commit_message,
+            review_result=review_result_raw,
+        )
 
         # 将review结果提交到GitHub的 notes
-        handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
+        handler.add_pull_request_notes(formatted_output)
 
         # dispatch pull_request_reviewed event
         event_manager['merge_request_reviewed'].send(
@@ -320,21 +390,40 @@ def handle_gitea_push_event(webhook_data: dict, gitea_token: str, gitea_url: str
         additions = 0
         deletions = 0
         if push_review_enabled:
-            changes = handler.get_push_changes()
-            logger.info('changes: %s', changes)
-            changes = filter_gitea_changes(changes)
+            changes_raw = handler.get_push_changes()
+            logger.info('changes: %s', changes_raw)
+            changes = filter_gitea_changes(changes_raw)
             if not changes:
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
-            review_result = "关注的文件没有修改"
-
-            if len(changes) > 0:
+                review_result = "关注的文件没有修改"
+            else:
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result = CodeReviewer().review_and_strip_code(str(changes), commits_text)
-                score = CodeReviewer.parse_review_score(review_text=review_result)
+                review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+                score = CodeReviewer.parse_review_level(review_text=review_result_raw)
+
                 for item in changes:
                     additions += item.get('additions', 0)
                     deletions += item.get('deletions', 0)
-            handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+
+                # 格式化输出
+                sender = webhook_data.get('sender', {}) or webhook_data.get('pusher', {})
+                commit_message = commits[0].get('message', '').strip() if commits else ''
+                review_result = CodeReviewer.format_review_output(
+                    project_name=repository.get('name', ''),
+                    author=sender.get('login') or sender.get('username', ''),
+                    branch=handler.branch_name,
+                    additions=additions,
+                    deletions=deletions,
+                    comment_lines=0,
+                    total_files=len(changes_raw) if changes_raw else 0,
+                    filtered_files=len(changes_raw) - len(changes) if changes_raw else 0,
+                    abnormal_files=0,
+                    normal_files=len(changes),
+                    commit_message=commit_message,
+                    review_result=review_result_raw,
+                )
+
+            handler.add_push_notes(review_result)
 
         repository = webhook_data.get('repository', {})
         sender = webhook_data.get('sender', {}) or webhook_data.get('pusher', {}) or {}
@@ -377,10 +466,12 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
 
         head_info = pull_request.get('head') or {}
         base_info = pull_request.get('base') or {}
+        repository = webhook_data.get('repository', {})
+        author_info = pull_request.get('user', {}) or webhook_data.get('sender', {}) or {}
 
         last_commit_id = head_info.get('sha') or pull_request.get('merge_commit_sha') or pull_request.get('last_commit_id')
         if last_commit_id:
-            project_name = webhook_data.get('repository', {}).get('name')
+            project_name = repository.get('name')
             source_branch = head_info.get('ref') or pull_request.get('head_branch', '')
             target_branch = base_info.get('ref') or pull_request.get('base_branch', '')
 
@@ -388,9 +479,9 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
                 logger.info(f"Pull Request with last_commit_id {last_commit_id} already exists, skipping review for {project_name}.")
                 return
 
-        changes = handler.get_pull_request_changes()
-        logger.info('changes: %s', changes)
-        changes = filter_gitea_changes(changes)
+        changes_raw = handler.get_pull_request_changes()
+        logger.info('changes: %s', changes_raw)
+        changes = filter_gitea_changes(changes_raw)
         if not changes:
             logger.info('未检测到有关代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
             return
@@ -407,12 +498,26 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
             return
 
         commits_text = ';'.join(commit.get('title', '') for commit in commits)
-        review_result = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+        review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
 
-        handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
+        # 格式化输出
+        commit_message = commits[0].get('title', '') if commits else ''
+        formatted_output = CodeReviewer.format_review_output(
+            project_name=repository.get('name', ''),
+            author=author_info.get('login') or author_info.get('username', ''),
+            branch=head_info.get('ref') or pull_request.get('head_branch', ''),
+            additions=additions,
+            deletions=deletions,
+            comment_lines=0,
+            total_files=len(changes_raw) if changes_raw else 0,
+            filtered_files=len(changes_raw) - len(changes) if changes_raw else 0,
+            abnormal_files=0,
+            normal_files=len(changes),
+            commit_message=commit_message,
+            review_result=review_result_raw,
+        )
 
-        repository = webhook_data.get('repository', {})
-        author_info = pull_request.get('user', {}) or webhook_data.get('sender', {}) or {}
+        handler.add_pull_request_notes(formatted_output)
 
         event_manager['merge_request_reviewed'].send(
             MergeRequestReviewEntity(

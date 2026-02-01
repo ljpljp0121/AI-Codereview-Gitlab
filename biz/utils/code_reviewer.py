@@ -99,10 +99,115 @@ class CodeReviewer(BaseReviewer):
         return self.call_llm(messages)
 
     @staticmethod
+    def parse_review_level(review_text: str) -> str:
+        """解析 AI 返回的 Review 结果，返回问题级别"""
+        if not review_text:
+            return "---"
+        match = re.search(r"问题级别[:：]\s*(P[0-4]|---)", review_text)
+        return match.group(1) if match else "---"
+
+    @staticmethod
     def parse_review_score(review_text: str) -> int:
-        """解析 AI 返回的 Review 结果，返回评分"""
+        """解析 AI 返回的 Review 结果，返回评分（保留兼容性）"""
         if not review_text:
             return 0
         match = re.search(r"总分[:：]\s*(\d+)分?", review_text)
         return int(match.group(1)) if match else 0
+
+    @staticmethod
+    def format_review_output(
+        project_name: str,
+        author: str,
+        branch: str,
+        additions: int,
+        deletions: int,
+        comment_lines: int,
+        total_files: int,
+        filtered_files: int,
+        abnormal_files: int,
+        normal_files: int,
+        commit_message: str,
+        review_result: str,
+    ) -> str:
+        """
+        格式化代码审查输出
+
+        Args:
+            project_name: 项目名称
+            author: 操作人员
+            branch: 分支名称
+            additions: 新增行数
+            deletions: 删减行数
+            comment_lines: 注释行数
+            total_files: 本次提交文件数量
+            filtered_files: 审核过滤文件数量
+            abnormal_files: 代码异常文件数量
+            normal_files: 代码正常文件数量
+            commit_message: 提交消息
+            review_result: AI 审核结果
+
+        Returns:
+            格式化后的输出字符串
+        """
+        # 计算注释比例
+        total_lines = additions + deletions
+        comment_ratio = (comment_lines / total_lines * 100) if total_lines > 0 else 0
+
+        # 解析问题级别
+        level = CodeReviewer.parse_review_level(review_result)
+
+        # 分离审核概述和审核详情
+        overview = ""
+        details = ""
+        if "## 审核概述" in review_result:
+            parts = review_result.split("## 审核概述")
+            if len(parts) > 1:
+                remaining = parts[1]
+                if "## 审核详情" in remaining:
+                    overview_parts = remaining.split("## 审核详情")
+                    overview = overview_parts[0].strip()
+                    if len(overview_parts) > 1:
+                        details = overview_parts[1].strip()
+                else:
+                    overview = remaining.strip()
+        elif "审核概述" in review_result:
+            parts = review_result.split("审核概述")
+            if len(parts) > 1:
+                remaining = parts[1]
+                if "审核详情" in remaining:
+                    overview_parts = remaining.split("审核详情")
+                    overview = overview_parts[0].strip()
+                    if len(overview_parts) > 1:
+                        details = overview_parts[1].strip()
+                else:
+                    overview = remaining.strip()
+
+        # 如果没有找到概述和详情，把整个结果作为详情
+        if not overview and not details:
+            details = review_result
+
+        # 拼接输出
+        output = f"""项目名称：{project_name}
+操作人员：@{author}
+分支名称：{branch}
+新增行数：{additions}
+删减行数：{deletions}
+注释行数：{comment_lines}
+注释比例：{comment_ratio:.2f}%
+本次提交文件数量：{total_files}
+审核过滤文件数量：{filtered_files}
+代码异常文件数量：{abnormal_files}
+代码正常文件数量：{normal_files}
+问题级别：{level}
+提交消息
+{commit_message}
+
+"""
+
+        if overview:
+            output += f"审核概述\n{overview}\n\n"
+        if details and not details.startswith("本次代码审查未发现问题"):
+            output += f"审核详情\n{details}"
+
+        return output
 
