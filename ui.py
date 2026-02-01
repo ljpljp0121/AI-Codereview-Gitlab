@@ -323,27 +323,43 @@ def generate_project_count_chart(df):
     st.pyplot(fig1)
 
 
-# 生成项目平均分数图表
+# 生成项目问题级别分布图表
 def generate_project_score_chart(df):
     if df.empty:
         st.info("没有数据可供展示")
         return
 
-    # 计算每个项目的平均分数
-    project_scores = df.groupby('project_name')['score'].mean().reset_index()
-    project_scores.columns = ['project_name', 'average_score']
+    # 统计每个项目的问题级别分布
+    # P0=4, P1=3, P2=2, P3=1, P4=0, ---=-1
+    level_order = {'P0': 4, 'P1': 3, 'P2': 2, 'P3': 1, 'P4': 0, '---': -1}
+
+    # 过滤无效的score值
+    valid_scores = df[df['score'].isin(level_order.keys())].copy()
+    if valid_scores.empty:
+        st.info("没有有效的问题级别数据")
+        return
+
+    # 为每个项目计算加权平均问题级别
+    def calc_weighted_level(group):
+        weights = group['score'].map(level_order)
+        return weights.mean()
+
+    project_levels = valid_scores.groupby('project_name').apply(calc_weighted_level).reset_index()
+    project_levels.columns = ['project_name', 'average_level']
 
     # 生成颜色列表，每个项目一个颜色
-    # colors = plt.cm.get_cmap('Accent', len(project_scores))  # 使用'tab20'颜色映射，适合分类数据
-    colors = plt.colormaps['Accent'].resampled(len(project_scores))
-    # 显示平均分数柱状图
+    colors = plt.colormaps['Accent'].resampled(len(project_levels))
+    # 显示问题级别柱状图
     fig2, ax2 = plt.subplots(figsize=(10, 6))
     ax2.bar(
-        project_scores['project_name'],
-        project_scores['average_score'],
-        color=[colors(i) for i in range(len(project_scores))]
+        project_levels['project_name'],
+        project_levels['average_level'],
+        color=[colors(i) for i in range(len(project_levels))]
     )
     ax2.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax2.set_yticks([-1, 0, 1, 2, 3, 4])
+    ax2.set_yticklabels(['---', 'P4', 'P3', 'P2', 'P1', 'P0'])
+    ax2.set_ylabel('问题级别')
     plt.xticks(rotation=45, ha='right', fontsize=26)
     plt.tight_layout()
     st.pyplot(fig2)
@@ -375,26 +391,43 @@ def generate_author_count_chart(df):
     plt.close(fig1)
 
 
-# 生成人员平均分数图表
+# 生成人员问题级别分布图表
 def generate_author_score_chart(df):
     if df.empty:
         st.info("没有数据可供展示")
         return
 
-    # 计算每个人员的平均分数
-    author_scores = df.groupby('author')['score'].mean().reset_index()
-    author_scores.columns = ['author', 'average_score']
+    # 统计每个人员的问题级别分布
+    # P0=4, P1=3, P2=2, P3=1, P4=0, ---=-1
+    level_order = {'P0': 4, 'P1': 3, 'P2': 2, 'P3': 1, 'P4': 0, '---': -1}
 
-    # 显示平均分数柱状图
+    # 过滤无效的score值
+    valid_scores = df[df['score'].isin(level_order.keys())].copy()
+    if valid_scores.empty:
+        st.info("没有有效的问题级别数据")
+        return
+
+    # 为每个人员计算加权平均问题级别
+    def calc_weighted_level(group):
+        weights = group['score'].map(level_order)
+        return weights.mean()
+
+    author_levels = valid_scores.groupby('author').apply(calc_weighted_level).reset_index()
+    author_levels.columns = ['author', 'average_level']
+
+    # 显示问题级别柱状图
     fig2, ax2 = plt.subplots(figsize=(10, 6))
     # 生成颜色列表，每个项目一个颜色
-    colors = plt.colormaps['Pastel1'].resampled(len(author_scores))
+    colors = plt.colormaps['Pastel1'].resampled(len(author_levels))
     ax2.bar(
-        author_scores['author'],
-        author_scores['average_score'],
-        color=[colors(i) for i in range(len(author_scores))]
+        author_levels['author'],
+        author_levels['average_level'],
+        color=[colors(i) for i in range(len(author_levels))]
     )
     ax2.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax2.set_yticks([-1, 0, 1, 2, 3, 4])
+    ax2.set_yticklabels(['---', 'P4', 'P3', 'P2', 'P1', 'P0'])
+    ax2.set_ylabel('问题级别')
     plt.xticks(rotation=45, ha='right', fontsize=26)
     plt.tight_layout()
     st.pyplot(fig2)
@@ -501,8 +534,13 @@ def main_page():
             )
 
             total_records = len(df)
-            average_score = df["score"].mean() if not df.empty else 0
-            st.markdown(f"**总记录数:** {total_records}，**平均得分:** {average_score:.2f}")
+            # 统计问题级别分布
+            if not df.empty and 'score' in df.columns:
+                level_counts = df['score'].value_counts().to_dict()
+                level_summary = ', '.join([f"{k}: {v}" for k, v in sorted(level_counts.items())])
+                st.markdown(f"**总记录数:** {total_records}，**问题级别分布:** {level_summary}")
+            else:
+                st.markdown(f"**总记录数:** {total_records}")
 
             # 创建2x2网格布局展示四个图表
             row1, row2, row3, row4 = st.columns(4)
@@ -544,11 +582,9 @@ def main_page():
         "target_branch": "目标分支",
         "updated_at": "更新时间",
         "commit_messages": "提交信息",
-        "score": st.column_config.ProgressColumn(
-            "得分",
-            format="%f",
-            min_value=0,
-            max_value=100,
+        "score": st.column_config.TextColumn(
+            "问题级别",
+            width="small",
         ),
         "url": st.column_config.LinkColumn(
             "操作",
@@ -572,11 +608,9 @@ def main_page():
             "branch": "分支",
             "updated_at": "更新时间",
             "commit_messages": "提交信息",
-            "score": st.column_config.ProgressColumn(
-                "得分",
-                format="%f",
-                min_value=0,
-                max_value=100,
+            "score": st.column_config.TextColumn(
+                "问题级别",
+                width="small",
             ),
             "additions": None,
             "deletions": None,
