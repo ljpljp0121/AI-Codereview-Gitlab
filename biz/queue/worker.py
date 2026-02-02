@@ -39,7 +39,16 @@ def handle_push_event(webhook_data: dict, gitlab_token: str, gitlab_url: str, gi
                 review_result = "关注的文件没有修改"
             else:
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+                review_result_raw = CodeReviewer().review_and_strip_code(
+                    str(changes),
+                    commits_text,
+                    platform="gitlab",
+                    repo_info={
+                        "project_id": webhook_data['project']['id'],
+                        "ref": webhook_data.get('ref', '').replace('refs/heads/', '')
+                    },
+                    access_token=gitlab_token
+                )
                 score = CodeReviewer.parse_review_level(review_text=review_result_raw)
 
                 for item in changes:
@@ -153,7 +162,16 @@ def handle_merge_request_event(webhook_data: dict, gitlab_token: str, gitlab_url
 
         # review 代码
         commits_text = ';'.join(commit['title'] for commit in commits)
-        review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+        review_result_raw = CodeReviewer().review_and_strip_code(
+            str(changes),
+            commits_text,
+            platform="gitlab",
+            repo_info={
+                "project_id": webhook_data['project']['id'],
+                "ref": webhook_data['object_attributes']['source_branch']
+            },
+            access_token=gitlab_token
+        )
 
         # 格式化输出
         commit_message = commits[0].get('title', '') if commits else ''
@@ -223,8 +241,22 @@ def handle_github_push_event(webhook_data: dict, github_token: str, github_url: 
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
                 review_result = "关注的文件没有修改"
             else:
+                # 从 webhook 中提取 owner 和 repo
+                full_name = webhook_data['repository']['full_name']  # "owner/repo"
+                owner, repo = full_name.split('/', 1)
+
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+                review_result_raw = CodeReviewer().review_and_strip_code(
+                    str(changes),
+                    commits_text,
+                    platform="github",
+                    repo_info={
+                        "owner": owner,
+                        "repo": repo,
+                        "ref": webhook_data.get('ref', '').replace('refs/heads/', '')
+                    },
+                    access_token=github_token
+                )
                 score = CodeReviewer.parse_review_level(review_text=review_result_raw)
 
                 for item in changes:
@@ -327,8 +359,22 @@ def handle_github_pull_request_event(webhook_data: dict, github_token: str, gith
             return
 
         # review 代码
+        # 从 webhook 中提取 owner 和 repo
+        full_name = webhook_data['repository']['full_name']  # "owner/repo"
+        owner, repo = full_name.split('/', 1)
+
         commits_text = ';'.join(commit['title'] for commit in commits)
-        review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+        review_result_raw = CodeReviewer().review_and_strip_code(
+            str(changes),
+            commits_text,
+            platform="github",
+            repo_info={
+                "owner": owner,
+                "repo": repo,
+                "ref": webhook_data['pull_request']['head']['ref']
+            },
+            access_token=github_token
+        )
 
         # 格式化输出
         commit_message = commits[0].get('title', '') if commits else ''
@@ -397,8 +443,24 @@ def handle_gitea_push_event(webhook_data: dict, gitea_token: str, gitea_url: str
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
                 review_result = "关注的文件没有修改"
             else:
+                # 从 webhook 中提取 owner 和 repo
+                repository = webhook_data.get('repository', {})
+                full_name = repository.get('full_name', '')  # "owner/repo"
+                owner, repo = full_name.split('/', 1) if full_name else ('', '')
+
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+                review_result_raw = CodeReviewer().review_and_strip_code(
+                    str(changes),
+                    commits_text,
+                    platform="gitea",
+                    repo_info={
+                        "owner": owner,
+                        "repo": repo,
+                        "ref": handler.branch_name,
+                        "gitea_url": gitea_url
+                    },
+                    access_token=gitea_token
+                )
                 score = CodeReviewer.parse_review_level(review_text=review_result_raw)
 
                 for item in changes:
@@ -425,6 +487,7 @@ def handle_gitea_push_event(webhook_data: dict, gitea_token: str, gitea_url: str
 
             handler.add_push_notes(review_result)
 
+        # 事件发送时重新获取 repository 和 sender（因为可能在 if 外部使用）
         repository = webhook_data.get('repository', {})
         sender = webhook_data.get('sender', {}) or webhook_data.get('pusher', {}) or {}
 
@@ -497,8 +560,23 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
             logger.error('Failed to get commits for Gitea pull request')
             return
 
+        # 从 webhook 中提取 owner 和 repo
+        full_name = repository.get('full_name', '')  # "owner/repo"
+        owner, repo = full_name.split('/', 1) if full_name else ('', '')
+
         commits_text = ';'.join(commit.get('title', '') for commit in commits)
-        review_result_raw = CodeReviewer().review_and_strip_code(str(changes), commits_text)
+        review_result_raw = CodeReviewer().review_and_strip_code(
+            str(changes),
+            commits_text,
+            platform="gitea",
+            repo_info={
+                "owner": owner,
+                "repo": repo,
+                "ref": head_info.get('ref') or pull_request.get('head_branch', ''),
+                "gitea_url": gitea_url
+            },
+            access_token=gitea_token
+        )
 
         # 格式化输出
         commit_message = commits[0].get('title', '') if commits else ''
