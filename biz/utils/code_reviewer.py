@@ -1,11 +1,12 @@
 import abc
 import os
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple, Optional
 
 import yaml
 from jinja2 import Template
 
+from biz.entity.review_entity import IssueLevel, ReviewIssue, ParsedReviewResult
 from biz.llm.factory import Factory
 from biz.utils.log import logger
 from biz.utils.token_util import count_tokens, truncate_text_by_tokens
@@ -54,11 +55,122 @@ class BaseReviewer(abc.ABC):
         pass
 
 
+class ReviewResultParser:
+    """AI 审核结果解析器 - 支持多种解析策略"""
+
+    # 正则表达式模式
+    PATTERN_FILE_NAME = re.compile(r'文件名称[:：]\s*(.+?)(?:\n|$)')
+    PATTERN_ISSUE_LEVEL = re.compile(r'问题级别[:：]\s*(P[0-4]|---)')
+    PATTERN_DEFECT_CODE = re.compile(r'缺陷代码[:：]\s*\n```\n?(.*?)\n```', re.DOTALL)
+    PATTERN_DEFECT_CODE_ALT = re.compile(r'缺陷代码[:：]\s*\n(.+?)(?=\n(?:异常描述|温馨提示|文件名称)|\Z)', re.DOTALL)
+    PATTERN_ISSUE_DESCRIPTION = re.compile(r'异常描述[:：]\s*\n(.+?)(?=\n温馨提示|文件名称|问题级别|\Z)', re.DOTALL)
+    PATTERN_SUGGESTION = re.compile(r'温馨提示[:：]\s*(.+?)(?=\n(?:文件名称|问题级别)|\Z)', re.DOTALL)
+
+    def __init__(self):
+        self.parse_errors = []
+
+    def parse_review_result(self, review_text: str) -> ParsedReviewResult:
+        """解析 AI 审核结果"""
+        result = ParsedReviewResult(raw_text=review_text)
+
+        if not review_text or not review_text.strip():
+            result.overview = "审核结果为空"
+            return result
+
+        # 1. 分离概述和详情
+        overview, details_section = self._split_overview_and_details(review_text)
+        result.overview = overview.strip()
+
+        # 2. 检查是否无问题
+        if self._is_no_issues(details_section or review_text):
+            result.overview = "本次代码审查未发现问题，代码质量良好。"
+            return result
+
+        # 3. 解析问题列表
+        if details_section:
+            issues = self._parse_issues(details_section)
+        else:
+            issues = self._parse_issues(review_text)
+
+        result.issues = [issue for issue in issues if issue.is_valid()]
+        result.parse_errors = self.parse_errors.copy()
+
+        return result
+
+    def _split_overview_and_details(self, text: str) -> Tuple[str, str]:
+        """分离审核概述和审核详情"""
+        if "## 审核概述" in text:
+            parts = text.split("## 审核概述")
+            if len(parts) > 1:
+                remaining = parts[1]
+                if "## 审核详情" in remaining:
+                    overview_parts = remaining.split("## 审核详情")
+                    return overview_parts[0].strip(), overview_parts[1].strip()
+                return remaining.strip(), ""
+        return "", text
+
+    def _is_no_issues(self, text: str) -> bool:
+        """检查是否表示无问题"""
+        return bool(re.search(r'本次代码审查未发现问题|代码质量良好|没有发现问题', text))
+
+    def _parse_issues(self, details_text: str) -> List[ReviewIssue]:
+        """解析问题列表 - 使用多种策略"""
+        # 策略1: 基于"文件名称"分块
+        file_blocks = re.split(r'(?=文件名称[:：])', details_text)
+        issues = []
+        for block in file_blocks:
+            if block.strip() and '文件名称' in block:
+                issue = self._parse_single_issue(block.strip())
+                if issue:
+                    issues.append(issue)
+        return issues
+
+    def _parse_single_issue(self, block: str) -> Optional[ReviewIssue]:
+        """解析单个问题块"""
+        issue = ReviewIssue(raw_text=block)
+
+        # 提取文件名称
+        match = self.PATTERN_FILE_NAME.search(block)
+        issue.file_name = match.group(1).strip() if match else "未知文件"
+
+        # 提取问题级别
+        match = self.PATTERN_ISSUE_LEVEL.search(block)
+        if match:
+            try:
+                issue.issue_level = IssueLevel(match.group(1))
+            except ValueError:
+                issue.issue_level = IssueLevel.NONE
+
+        # 提取缺陷代码
+        match = self.PATTERN_DEFECT_CODE.search(block)
+        if not match:
+            match = self.PATTERN_DEFECT_CODE_ALT.search(block)
+        issue.defect_code = match.group(1).strip() if match else ""
+
+        # 提取异常描述
+        match = self.PATTERN_ISSUE_DESCRIPTION.search(block)
+        issue.issue_description = match.group(1).strip() if match else ""
+
+        # 提取温馨提示
+        match = self.PATTERN_SUGGESTION.search(block)
+        issue.suggestion = match.group(1).strip() if match else ""
+
+        return issue if issue.is_valid() else None
+
+
 class CodeReviewer(BaseReviewer):
     """代码 Diff 级别的审查"""
 
+    # 创建解析器实例（类级别的单例）
+    _parser = ReviewResultParser()
+
     def __init__(self):
         super().__init__("code_review_prompt")
+
+    @classmethod
+    def parse_review_result_structured(cls, review_text: str) -> ParsedReviewResult:
+        """解析 AI 审核结果为结构化数据"""
+        return cls._parser.parse_review_result(review_text)
 
     def review_and_strip_code(self, changes_text: str, commits_text: str = "") -> str:
         """
@@ -130,7 +242,7 @@ class CodeReviewer(BaseReviewer):
         review_result: str,
     ) -> str:
         """
-        格式化代码审查输出
+        格式化代码审查输出（增强版 - 使用结构化解析）
 
         Args:
             project_name: 项目名称
@@ -149,44 +261,17 @@ class CodeReviewer(BaseReviewer):
         Returns:
             格式化后的输出字符串
         """
+        # 使用结构化解析
+        parsed = CodeReviewer.parse_review_result_structured(review_result)
+
         # 计算注释比例
         total_lines = additions + deletions
         comment_ratio = (comment_lines / total_lines * 100) if total_lines > 0 else 0
 
-        # 解析问题级别
-        level = CodeReviewer.parse_review_level(review_result)
+        # 使用解析后的级别
+        level = parsed.max_issue_level.value
 
-        # 分离审核概述和审核详情
-        overview = ""
-        details = ""
-        if "## 审核概述" in review_result:
-            parts = review_result.split("## 审核概述")
-            if len(parts) > 1:
-                remaining = parts[1]
-                if "## 审核详情" in remaining:
-                    overview_parts = remaining.split("## 审核详情")
-                    overview = overview_parts[0].strip()
-                    if len(overview_parts) > 1:
-                        details = overview_parts[1].strip()
-                else:
-                    overview = remaining.strip()
-        elif "审核概述" in review_result:
-            parts = review_result.split("审核概述")
-            if len(parts) > 1:
-                remaining = parts[1]
-                if "审核详情" in remaining:
-                    overview_parts = remaining.split("审核详情")
-                    overview = overview_parts[0].strip()
-                    if len(overview_parts) > 1:
-                        details = overview_parts[1].strip()
-                else:
-                    overview = remaining.strip()
-
-        # 如果没有找到概述和详情，把整个结果作为详情
-        if not overview and not details:
-            details = review_result
-
-        # 拼接输出
+        # 拼接统计信息头部
         output = f"""项目名称：{project_name}
 操作人员：@{author}
 分支名称：{branch}
@@ -204,10 +289,13 @@ class CodeReviewer(BaseReviewer):
 
 """
 
-        if overview:
-            output += f"审核概述\n{overview}\n\n"
-        if details and not details.startswith("本次代码审查未发现问题"):
-            output += f"审核详情\n{details}"
+        if parsed.overview:
+            output += f"审核概述\n{parsed.overview}\n\n"
+
+        if parsed.issues:
+            output += f"审核详情\n"
+            for issue in parsed.issues:
+                output += "\n" + issue.to_markdown() + "\n" + "-" * 50 + "\n"
 
         return output
 
